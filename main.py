@@ -1,0 +1,65 @@
+import argparse
+import sys
+import boto3
+from scanner.aws import run_all_aws_checks
+from scanner.aggregator import aggregate
+from scanner.reporter import write_reports
+
+
+SEVERITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="CloudSentinel — cloud misconfiguration scanner")
+    parser.add_argument("--cloud", choices=["aws", "azure", "all"], default="aws")
+    parser.add_argument("--region", default="us-east-1")
+    parser.add_argument("--endpoint-url", default=None, help="LocalStack or custom endpoint URL")
+    parser.add_argument("--fail-on", choices=["critical", "high", "medium", "low"], default="critical")
+    parser.add_argument("--output-dir", default="./reports")
+    return parser.parse_args()
+
+
+def main():
+    args = parse_args()
+
+    if args.cloud in ("azure", "all"):
+        print("WARNING: Azure checks are not implemented yet. Running AWS checks only.", file=sys.stderr)
+
+    try:
+        session_kwargs = {}
+        if args.endpoint_url:
+            session_kwargs["endpoint_url"] = args.endpoint_url
+
+        session = boto3.Session()
+
+        client_kwargs = {"region_name": args.region}
+        if args.endpoint_url:
+            client_kwargs["endpoint_url"] = args.endpoint_url
+
+        raw_findings = run_all_aws_checks(session, args.region, endpoint_url=args.endpoint_url)
+        findings, summary = aggregate(raw_findings)
+
+        json_path, md_path = write_reports(findings, summary, args.output_dir)
+        print(f"Report written: {json_path}")
+        print(f"Report written: {md_path}")
+        print(f"Summary: {summary}")
+
+        fail_threshold = SEVERITY_ORDER[args.fail_on]
+        has_blocking = any(
+            SEVERITY_ORDER[f.severity] <= fail_threshold for f in findings
+        )
+
+        if has_blocking:
+            print(f"GATE FAILED: findings at or above '{args.fail_on}' threshold detected.", file=sys.stderr)
+            sys.exit(1)
+        else:
+            print("Gate passed.")
+            sys.exit(0)
+
+    except Exception as e:
+        print(f"Scan error: {e}", file=sys.stderr)
+        sys.exit(2)
+
+
+if __name__ == "__main__":
+    main()
