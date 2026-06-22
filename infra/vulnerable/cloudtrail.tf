@@ -52,7 +52,11 @@ resource "aws_s3_bucket_policy" "cloudtrail_logs" {
 
 # Trail with logging disabled and no log file validation
 # Triggers: CLOUDTRAIL_LOGGING_DISABLED, CLOUDTRAIL_LOG_VALIDATION_OFF
+# count = 0 when targeting LocalStack free tier (enable_cloudtrail_resource=false);
+# Checkov still scans this block statically regardless of count.
 resource "aws_cloudtrail" "vulnerable" {
+  count = var.enable_cloudtrail_resource ? 1 : 0
+
   depends_on = [aws_s3_bucket_policy.cloudtrail_logs]
 
   name                       = "cloudsentinel-vulnerable-trail"

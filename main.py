@@ -16,6 +16,12 @@ def parse_args():
     parser.add_argument("--endpoint-url", default=None, help="LocalStack or custom endpoint URL")
     parser.add_argument("--fail-on", choices=["critical", "high", "medium", "low"], default="critical")
     parser.add_argument("--output-dir", default="./reports")
+    parser.add_argument(
+        "--exclude-checks",
+        default="",
+        metavar="CHECK_IDS",
+        help="Comma-separated check IDs to exclude from findings and the fail-on gate (e.g. CLOUDTRAIL_NO_TRAIL).",
+    )
     return parser.parse_args()
 
 
@@ -38,6 +44,11 @@ def main():
 
         raw_findings = run_all_aws_checks(session, args.region, endpoint_url=args.endpoint_url)
         findings, summary = aggregate(raw_findings)
+
+        excluded = {c.strip() for c in args.exclude_checks.split(",") if c.strip()}
+        if excluded:
+            findings = [f for f in findings if f.check_id not in excluded]
+            summary = aggregate(findings)[1]
 
         json_path, md_path = write_reports(findings, summary, args.output_dir)
         print(f"Report written: {json_path}")

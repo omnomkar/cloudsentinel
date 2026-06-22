@@ -10,6 +10,12 @@ variable "region" {
   default     = "us-east-1"
 }
 
+variable "enable_cloudtrail_resource" {
+  description = "Whether to create the aws_cloudtrail resource. Set to false when targeting LocalStack's free tier, which does not support the CloudTrail API. The Terraform file remains intact for static Checkov scanning regardless of this value."
+  type        = bool
+  default     = true
+}
+
 variable "admin_cidr" {
   description = "CIDR block for SSH/RDP admin access to compute resources. Replace with your organisation's actual IP range."
   type        = string

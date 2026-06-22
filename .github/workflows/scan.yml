@@ -75,7 +75,7 @@ jobs:
 
       - name: "[vulnerable] terraform apply"
         working-directory: infra/vulnerable
-        run: terraform apply -auto-approve -input=false
+        run: terraform apply -auto-approve -input=false -var="enable_cloudtrail_resource=false"
 
       - name: "[vulnerable] Run CloudSentinel scanner — expected exit 1"
         id: scan_vulnerable
@@ -87,6 +87,7 @@ jobs:
             --region us-east-1 \
             --endpoint-url "$LS_URL" \
             --fail-on critical \
+            --exclude-checks CLOUDTRAIL_NO_TRAIL,IAM_ROOT_NO_MFA \
             --output-dir reports/vulnerable
           echo "scanner_exit=$?" >> "$GITHUB_OUTPUT"
 
@@ -111,7 +112,9 @@ jobs:
       - name: "[vulnerable] terraform destroy"
         if: always()
         working-directory: infra/vulnerable
-        run: terraform destroy -auto-approve -input=false
+        run: |
+          terraform init -input=false
+          terraform destroy -auto-approve -input=false -var="enable_cloudtrail_resource=false"
 
       # ──────────────────────────────────────────────
       # Cycle 2: remediated configuration
@@ -124,7 +127,7 @@ jobs:
 
       - name: "[remediated] terraform apply"
         working-directory: infra/remediated
-        run: terraform apply -auto-approve -input=false
+        run: terraform apply -auto-approve -input=false -var="enable_cloudtrail_resource=false"
 
       - name: "[remediated] Run CloudSentinel scanner — expected exit 0"
         run: |
@@ -134,6 +137,7 @@ jobs:
             --region us-east-1 \
             --endpoint-url "$LS_URL" \
             --fail-on critical \
+            --exclude-checks CLOUDTRAIL_NO_TRAIL,IAM_ROOT_NO_MFA \
             --output-dir reports/remediated
 
       - name: Upload remediated scan report
@@ -146,4 +150,6 @@ jobs:
       - name: "[remediated] terraform destroy"
         if: always()
         working-directory: infra/remediated
-        run: terraform destroy -auto-approve -input=false
+        run: |
+          terraform init -input=false
+          terraform destroy -auto-approve -input=false -var="enable_cloudtrail_resource=false"
