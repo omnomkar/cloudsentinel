@@ -1,0 +1,4 @@
+azure-identity>=1.15,<2.0
+azure-mgmt-storage>=21.0,<22.0
+azure-mgmt-network>=25.0,<26.0
+azure-mgmt-resource>=23.0,<24.0
