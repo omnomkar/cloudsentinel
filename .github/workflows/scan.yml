@@ -1,0 +1,149 @@
+name: Runtime Scan (LocalStack)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  runtime-scan:
+    name: runtime-scan
+    runs-on: ubuntu-latest
+
+    services:
+      localstack:
+        image: localstack/localstack:3.8
+        ports:
+          - 4566:4566
+        env:
+          SERVICES: s3,iam,ec2,cloudtrail,sts
+          DEFAULT_REGION: us-east-1
+        options: >-
+          --health-cmd "curl -sf http://localhost:4566/_localstack/health || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 12
+
+    env:
+      LS_URL: http://localhost:4566
+      TF_VAR_endpoint_url: http://localhost:4566
+      TF_VAR_region: us-east-1
+      # Dummy credentials for LocalStack (validated only syntactically)
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_DEFAULT_REGION: us-east-1
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~1.5"
+
+      - name: Wait for LocalStack health
+        run: |
+          echo "Waiting for LocalStack to be healthy..."
+          for i in $(seq 1 30); do
+            if curl -sf "$LS_URL/_localstack/health" > /dev/null; then
+              echo "LocalStack is healthy."
+              break
+            fi
+            echo "  attempt $i/30 — not ready yet, sleeping 5s"
+            sleep 5
+          done
+          curl -sf "$LS_URL/_localstack/health" || { echo "LocalStack did not become healthy in time"; exit 1; }
+
+      # ──────────────────────────────────────────────
+      # Cycle 1: vulnerable configuration
+      # Expected scanner exit code: 1 (critical findings present)
+      # ──────────────────────────────────────────────
+
+      - name: "[vulnerable] terraform init"
+        working-directory: infra/vulnerable
+        run: terraform init -input=false
+
+      - name: "[vulnerable] terraform apply"
+        working-directory: infra/vulnerable
+        run: terraform apply -auto-approve -input=false
+
+      - name: "[vulnerable] Run CloudSentinel scanner — expected exit 1"
+        id: scan_vulnerable
+        continue-on-error: true
+        run: |
+          mkdir -p reports/vulnerable
+          python3 main.py \
+            --cloud aws \
+            --region us-east-1 \
+            --endpoint-url "$LS_URL" \
+            --fail-on critical \
+            --output-dir reports/vulnerable
+          echo "scanner_exit=$?" >> "$GITHUB_OUTPUT"
+
+      - name: "[vulnerable] Verify scanner exited 1 (critical findings expected)"
+        run: |
+          outcome="${{ steps.scan_vulnerable.outcome }}"
+          if [[ "$outcome" == "success" ]]; then
+            echo "ERROR: Scanner returned exit 0 on vulnerable config — expected exit 1."
+            echo "At least one critical finding should be present (SG_SSH_OPEN_TO_WORLD,"
+            echo "SG_RDP_OPEN_TO_WORLD, CLOUDTRAIL_NO_TRAIL / CLOUDTRAIL_LOGGING_DISABLED)."
+            exit 1
+          fi
+          echo "Confirmed: scanner exited 1 on vulnerable config (expected behaviour)."
+
+      - name: Upload vulnerable scan report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: report-vulnerable
+          path: reports/vulnerable/
+
+      - name: "[vulnerable] terraform destroy"
+        if: always()
+        working-directory: infra/vulnerable
+        run: terraform destroy -auto-approve -input=false
+
+      # ──────────────────────────────────────────────
+      # Cycle 2: remediated configuration
+      # Expected scanner exit code: 0 (no critical findings)
+      # ──────────────────────────────────────────────
+
+      - name: "[remediated] terraform init"
+        working-directory: infra/remediated
+        run: terraform init -input=false
+
+      - name: "[remediated] terraform apply"
+        working-directory: infra/remediated
+        run: terraform apply -auto-approve -input=false
+
+      - name: "[remediated] Run CloudSentinel scanner — expected exit 0"
+        run: |
+          mkdir -p reports/remediated
+          python3 main.py \
+            --cloud aws \
+            --region us-east-1 \
+            --endpoint-url "$LS_URL" \
+            --fail-on critical \
+            --output-dir reports/remediated
+
+      - name: Upload remediated scan report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: report-remediated
+          path: reports/remediated/
+
+      - name: "[remediated] terraform destroy"
+        if: always()
+        working-directory: infra/remediated
+        run: terraform destroy -auto-approve -input=false

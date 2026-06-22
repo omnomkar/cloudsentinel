@@ -1,0 +1,51 @@
+# Checkov configuration for CloudSentinel
+#
+# Scope: scan infra/ only (both vulnerable/ and remediated/ subdirs).
+# soft-fail: false — any finding exits non-zero, which is the desired
+# behaviour for the "vulnerable/" CI job (it should FAIL).
+#
+# skip-check contains only checks that are genuinely outside the scope of
+# CloudSentinel's 16 scanner checks.  Checks that directly correspond to
+# those 16 are intentionally NOT suppressed so Checkov serves as a static
+# complement to the runtime scanner.
+#
+# Suppression rationale per check:
+#   CKV_AWS_18        S3 access logging — not a CloudSentinel check
+#   CKV_AWS_21        S3 versioning — not a CloudSentinel check
+#   CKV_AWS_35        CloudTrail KMS CMK — CloudSentinel accepts AES256 on the
+#                     bucket; CKV_AWS_35 requires KMS (stricter than our check)
+#   CKV_AWS_67        CloudTrail multi-region — not a CloudSentinel check
+#   CKV_AWS_144       S3 cross-region replication — not a CloudSentinel check
+#   CKV_AWS_145       S3 KMS-only encryption — CloudSentinel accepts AES256;
+#                     CKV_AWS_145 requires KMS specifically (stricter)
+#   CKV_AWS_252       CloudTrail SNS topic — not a CloudSentinel check
+#   CKV_AWS_273       IAM users via SSO only — not a CloudSentinel check
+#   CKV2_AWS_5        Security groups attached to a resource — deployment
+#                     topology check, not a misconfiguration check
+#   CKV2_AWS_10       CloudTrail CloudWatch Logs integration — not a
+#                     CloudSentinel check
+#   CKV2_AWS_11       VPC flow logging — not a CloudSentinel check
+#   CKV2_AWS_12       VPC default SG restricts all traffic — not a check
+#   CKV2_AWS_61       S3 lifecycle configuration — not a CloudSentinel check
+#   CKV2_AWS_62       S3 event notifications — not a CloudSentinel check
+
+directory:
+  - infra/
+
+soft-fail: false
+
+skip-check:
+  - CKV_AWS_18
+  - CKV_AWS_21
+  - CKV_AWS_35
+  - CKV_AWS_67
+  - CKV_AWS_144
+  - CKV_AWS_145
+  - CKV_AWS_252
+  - CKV_AWS_273
+  - CKV2_AWS_5
+  - CKV2_AWS_10
+  - CKV2_AWS_11
+  - CKV2_AWS_12
+  - CKV2_AWS_61
+  - CKV2_AWS_62

@@ -1,0 +1,55 @@
+name: Checkov IaC Scan
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Two steps in one job so both outcomes are visible in the Actions log.
+# The vulnerable/ scan is EXPECTED to fail (it contains intentional misconfigs).
+# The remediated/ scan MUST pass.  If either behaves unexpectedly the job fails.
+jobs:
+  checkov-scan:
+    name: checkov-scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Checkov
+        run: pip install "checkov>=3.2,<4.0"
+
+      # Step 1 — vulnerable/ scan.
+      # Expected outcome: Checkov finds misconfigurations and exits 1.
+      # continue-on-error lets Step 2 always run so both results are visible.
+      # The final verification step fails the job if this unexpectedly passes.
+      - name: "Scan infra/vulnerable/ — expected to FAIL (intentional misconfigs)"
+        id: scan_vulnerable
+        continue-on-error: true
+        run: |
+          echo "=== Scanning infra/vulnerable/ — should report findings ==="
+          checkov -d infra/vulnerable --config-file .checkov.yaml
+          echo "checkov_exit=$?" >> "$GITHUB_OUTPUT"
+
+      # Step 2 — remediated/ scan.
+      # Expected outcome: all checks pass, Checkov exits 0.
+      # This step fails the job if remediated/ has any unsuppressed findings.
+      - name: "Scan infra/remediated/ — expected to PASS (secure config)"
+        id: scan_remediated
+        run: |
+          echo "=== Scanning infra/remediated/ — should be clean ==="
+          checkov -d infra/remediated --config-file .checkov.yaml
+
+      # Guard: fail the job if vulnerable/ was unexpectedly clean.
+      # A "success" outcome on scan_vulnerable means Checkov exited 0,
+      # which would indicate the intentional misconfigs are no longer flagged.
+      - name: Verify vulnerable/ scan reported findings (regression guard)
+        if: steps.scan_vulnerable.outcome == 'success'
+        run: |
+          echo "ERROR: infra/vulnerable/ scan reported no findings."
+          echo "The vulnerable configuration should always trigger Checkov checks."
+          echo "If you have recently changed infra/vulnerable/, ensure the"
+          echo "intentional misconfigurations are still present."
+          exit 1
