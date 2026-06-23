@@ -14,6 +14,7 @@ def parse_args():
     parser.add_argument("--cloud", choices=["aws", "azure", "all"], default="aws")
     parser.add_argument("--region", default="us-east-1")
     parser.add_argument("--endpoint-url", default=None, help="LocalStack or custom endpoint URL")
+    parser.add_argument("--subscription-id", default=None, help="Azure subscription ID (required for --cloud azure/all)")
     parser.add_argument("--fail-on", choices=["critical", "high", "medium", "low"], default="critical")
     parser.add_argument("--output-dir", default="./reports")
     parser.add_argument(
@@ -28,21 +29,22 @@ def parse_args():
 def main():
     args = parse_args()
 
-    if args.cloud in ("azure", "all"):
-        print("WARNING: Azure checks are not implemented yet. Running AWS checks only.", file=sys.stderr)
-
     try:
-        session_kwargs = {}
-        if args.endpoint_url:
-            session_kwargs["endpoint_url"] = args.endpoint_url
+        raw_findings = []
 
-        session = boto3.Session()
+        if args.cloud in ("aws", "all"):
+            session = boto3.Session()
+            raw_findings.extend(run_all_aws_checks(session, args.region, endpoint_url=args.endpoint_url))
 
-        client_kwargs = {"region_name": args.region}
-        if args.endpoint_url:
-            client_kwargs["endpoint_url"] = args.endpoint_url
+        if args.cloud in ("azure", "all"):
+            if not args.subscription_id:
+                print("Error: --subscription-id is required when --cloud is 'azure' or 'all'.", file=sys.stderr)
+                sys.exit(2)
+            from azure.identity import DefaultAzureCredential
+            from scanner.azure import run_all_azure_checks
+            credential = DefaultAzureCredential()
+            raw_findings.extend(run_all_azure_checks(credential, args.subscription_id))
 
-        raw_findings = run_all_aws_checks(session, args.region, endpoint_url=args.endpoint_url)
         findings, summary = aggregate(raw_findings)
 
         excluded = {c.strip() for c in args.exclude_checks.split(",") if c.strip()}

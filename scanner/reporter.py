@@ -23,6 +23,19 @@ CIS_MAPPING = {
     "SG_RDP_OPEN_TO_WORLD": "5.3",
     "SG_UNRESTRICTED_EGRESS": "5.4",
     "SG_OVERLY_PERMISSIVE": "5.4",
+    # Azure mappings are standardized against CIS Microsoft Azure Foundations
+    # Benchmark v1.4.0 (released 11-26-2021). Control numbers shift between
+    # benchmark versions (e.g. public blob access is 3.7 in v1.0.0 but 3.5 in
+    # v1.4.0), so do not copy these numbers into a different version without
+    # re-checking the source document. Checks with no matching control in
+    # v1.4.0 are intentionally omitted here (rendered as "N/A" in reports)
+    # rather than mapped to a plausible-looking but wrong number.
+    "AZURE_STORAGE_SECURE_TRANSFER": "3.1",
+    "AZURE_STORAGE_PUBLIC_BLOB_ACCESS": "3.5",
+    "AZURE_STORAGE_NETWORK_ACCESS_ALL": "3.6",
+    "AZURE_STORAGE_CMK_ENCRYPTION": "3.9",
+    "AZURE_NSG_RDP_OPEN_TO_WORLD": "6.1",
+    "AZURE_NSG_SSH_OPEN_TO_WORLD": "6.2",
 }
 
 SEVERITY_EMOJI = {
