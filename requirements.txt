@@ -3,3 +3,9 @@ moto[s3,iam,ec2,cloudtrail]>=5.0,<6.0
 pytest>=8.0
 pytest-cov>=5.0
 checkov>=3.2
+
+# Azure SDK
+azure-identity>=1.15,<2.0
+azure-mgmt-storage>=21.0,<22.0
+azure-mgmt-network>=25.0,<26.0
+azure-mgmt-resource>=23.0,<24.0
