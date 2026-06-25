@@ -1,0 +1,20 @@
+# VCS / session data
+.git/
+.claude/
+
+# Python
+venv/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# Dev/test only — not needed in the runtime image
+tests/
+infra/
+.github/
+.checkov.yaml
+
+# Scanner output, not part of the image
+reports/
