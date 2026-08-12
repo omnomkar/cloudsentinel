@@ -108,15 +108,15 @@ Generated: 2026-06-22 21:13:22 UTC
 
 | Severity | Count |
 |----------|-------|
-| 🔴 Critical | 0 |
-| 🟠 High | 0 |
-| 🟡 Medium | 2 |
-| 🟢 Low | 0 |
+| Critical | 0 |
+| High | 0 |
+| Medium | 2 |
+| Low | 0 |
 | **Total** | **2** |
 
 ## Findings
 
-### 🟡 Medium (2)
+### Medium (2)
 
 #### Security group allows unrestricted egress to 0.0.0.0/0
 - **Check ID:** `SG_UNRESTRICTED_EGRESS`
