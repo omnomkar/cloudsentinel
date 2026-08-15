@@ -769,12 +769,12 @@ class TestReporter:
         assert data["summary"]["critical"] == 1
         assert len(data["findings"]) == 1
 
-    def test_markdown_contains_severity_emoji(self, tmp_path):
+    def test_markdown_contains_severity_heading(self, tmp_path):
         findings = [_make_finding(severity="critical")]
         _, summary = aggregate(findings)
         _, md_path = write_reports(findings, summary, str(tmp_path))
         content = open(md_path).read()
-        assert "🔴" in content
+        assert "### Critical (1)" in content
 
     def test_markdown_contains_cis_mapping(self, tmp_path):
         findings = [_make_finding(check_id="IAM_ROOT_NO_MFA", severity="critical")]

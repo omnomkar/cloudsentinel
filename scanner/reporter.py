@@ -38,14 +38,6 @@ CIS_MAPPING = {
     "AZURE_NSG_SSH_OPEN_TO_WORLD": "6.2",
 }
 
-SEVERITY_EMOJI = {
-    "critical": "🔴",
-    "high": "🟠",
-    "medium": "🟡",
-    "low": "🟢",
-}
-
-
 def write_reports(findings: List[Finding], summary: Dict, output_dir: str) -> Tuple[str, str]:
     os.makedirs(output_dir, exist_ok=True)
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -78,10 +70,10 @@ def _write_markdown(findings: List[Finding], summary: Dict, path: str) -> None:
         "",
         f"| Severity | Count |",
         f"|----------|-------|",
-        f"| {SEVERITY_EMOJI['critical']} Critical | {summary['critical']} |",
-        f"| {SEVERITY_EMOJI['high']} High | {summary['high']} |",
-        f"| {SEVERITY_EMOJI['medium']} Medium | {summary['medium']} |",
-        f"| {SEVERITY_EMOJI['low']} Low | {summary['low']} |",
+        f"| Critical | {summary['critical']} |",
+        f"| High | {summary['high']} |",
+        f"| Medium | {summary['medium']} |",
+        f"| Low | {summary['low']} |",
         f"| **Total** | **{summary['total']}** |",
         "",
         "## CIS Benchmark Mapping",
@@ -102,8 +94,7 @@ def _write_markdown(findings: List[Finding], summary: Dict, path: str) -> None:
         sev_findings = by_severity[severity]
         if not sev_findings:
             continue
-        emoji = SEVERITY_EMOJI[severity]
-        lines.append(f"### {emoji} {severity.capitalize()} ({len(sev_findings)})")
+        lines.append(f"### {severity.capitalize()} ({len(sev_findings)})")
         lines.append("")
         for f in sev_findings:
             cis = CIS_MAPPING.get(f.check_id, "N/A")

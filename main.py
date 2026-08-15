@@ -4,6 +4,7 @@ import boto3
 from scanner.aws import run_all_aws_checks
 from scanner.aggregator import aggregate
 from scanner.reporter import write_reports
+from scanner.console import color_enabled, render_report
 
 
 SEVERITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3}
@@ -23,6 +24,7 @@ def parse_args():
         metavar="CHECK_IDS",
         help="Comma-separated check IDs to exclude from findings and the fail-on gate (e.g. CLOUDTRAIL_NO_TRAIL).",
     )
+    parser.add_argument("--no-color", action="store_true", help="Disable ANSI color in console output.")
     return parser.parse_args()
 
 
@@ -48,26 +50,41 @@ def main():
         findings, summary = aggregate(raw_findings)
 
         excluded = {c.strip() for c in args.exclude_checks.split(",") if c.strip()}
+        excluded_count = 0
         if excluded:
+            pre_exclusion_total = len(findings)
             findings = [f for f in findings if f.check_id not in excluded]
             summary = aggregate(findings)[1]
+            excluded_count = pre_exclusion_total - len(findings)
 
         json_path, md_path = write_reports(findings, summary, args.output_dir)
-        print(f"Report written: {json_path}")
-        print(f"Report written: {md_path}")
-        print(f"Summary: {summary}")
 
         fail_threshold = SEVERITY_ORDER[args.fail_on]
         has_blocking = any(
             SEVERITY_ORDER[f.severity] <= fail_threshold for f in findings
         )
+        blocking_count = sum(
+            1 for f in findings if SEVERITY_ORDER[f.severity] <= fail_threshold
+        )
 
-        if has_blocking:
-            print(f"GATE FAILED: findings at or above '{args.fail_on}' threshold detected.", file=sys.stderr)
-            sys.exit(1)
-        else:
-            print("Gate passed.")
-            sys.exit(0)
+        clouds = ["aws"] if args.cloud == "aws" else ["azure"] if args.cloud == "azure" else ["aws", "azure"]
+        render_report(
+            findings=findings,
+            summary=summary,
+            clouds=clouds,
+            region=args.region,
+            endpoint_url=args.endpoint_url,
+            excluded_ids=excluded,
+            excluded_count=excluded_count,
+            json_path=json_path,
+            md_path=md_path,
+            fail_on=args.fail_on,
+            blocking_count=blocking_count,
+            has_blocking=has_blocking,
+            use_color=color_enabled(args.no_color),
+        )
+
+        sys.exit(1 if has_blocking else 0)
 
     except Exception as e:
         print(f"Scan error: {e}", file=sys.stderr)
