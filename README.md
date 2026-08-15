@@ -1,11 +1,60 @@
 # CloudSentinel
 
+[![Runtime Scan](https://img.shields.io/github/actions/workflow/status/omnomkar/cloudsentinel/scan.yml?branch=main&label=Runtime%20Scan)](https://github.com/omnomkar/cloudsentinel/actions/workflows/scan.yml) [![Checkov](https://img.shields.io/github/actions/workflow/status/omnomkar/cloudsentinel/checkov.yml?branch=main&label=Checkov)](https://github.com/omnomkar/cloudsentinel/actions/workflows/checkov.yml) [![Python](https://img.shields.io/badge/python-3.12-blue)](https://www.python.org/) [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
 CloudSentinel is a cloud security posture management (CSPM) scanner. It inspects
 AWS and Azure resources for common misconfigurations, maps every finding to a
 CIS Benchmark control ID, and produces JSON and Markdown reports you can read
 locally or wire into CI as a pass/fail gate.
 
 It's read-only: CloudSentinel never modifies the resources it scans.
+
+![CloudSentinel scanning a vulnerable and a remediated Terraform stack](demo/cloudsentinel.gif)
+
+The same scanner, run against two Terraform stacks. Against `infra/vulnerable` it reports 6
+critical findings and exits 1 (`GATE FAILED`); against `infra/remediated` it reports no
+critical findings and exits 0 (`Gate passed`). Nothing about the scanner changes between the
+two runs — only the infrastructure it is pointed at.
+
+## How it works
+
+```mermaid
+flowchart TD
+    subgraph AWSSCAN["AWS scanners"]
+        S3["S3"]
+        IAM["IAM"]
+        CT["CloudTrail"]
+        SG["Security Groups"]
+    end
+
+    subgraph AZSCAN["Azure scanners"]
+        ST["Storage Accounts"]
+        NSG["Network Security Groups"]
+    end
+
+    AGG["Aggregator<br/>dedup + severity ordering"]
+    REP["Reporter<br/>JSON + Markdown + console"]
+    GATE{"CI gate<br/>--fail-on threshold"}
+    PASS["exit 0"]
+    FAIL["exit 1"]
+
+    S3 --> AGG
+    IAM --> AGG
+    CT --> AGG
+    SG --> AGG
+    ST --> AGG
+    NSG --> AGG
+
+    AGG --> REP
+    REP --> GATE
+    GATE -->|"nothing at or above threshold"| PASS
+    GATE -->|"findings at or above threshold"| FAIL
+```
+
+Each scanner returns findings independently. The aggregator deduplicates them by
+(resource, check) and orders them by severity; the reporter renders the same finding set three
+ways (JSON, Markdown, console); the gate compares the highest severity present against
+`--fail-on` and chooses the exit code.
 
 ## Features
 
@@ -97,12 +146,20 @@ Exit codes: `0` = no findings at/above the `--fail-on` threshold, `1` = gate fai
 
 ## Sample report output
 
-A trimmed excerpt from a real run (`reports/cloudsentinel_report_*.md`):
+Both reports from the run shown in the GIF above are committed, so you can read the real
+output rather than an excerpt of it:
+
+- [`demo/sample-report-vulnerable.md`](demo/sample-report-vulnerable.md) — the `infra/vulnerable`
+  stack: 14 findings (6 critical, 3 high, 5 medium), gate failed, exit 1.
+- [`demo/sample-report-remediated.md`](demo/sample-report-remediated.md) — the `infra/remediated`
+  stack: 2 findings (2 medium), gate passed, exit 0.
+
+A trimmed excerpt from the remediated report:
 
 ```markdown
 # CloudSentinel Report
 
-Generated: 2026-06-22 21:13:22 UTC
+Generated: 2026-08-15 11:34:03 UTC
 
 ## Summary
 
@@ -121,7 +178,7 @@ Generated: 2026-06-22 21:13:22 UTC
 #### Security group allows unrestricted egress to 0.0.0.0/0
 - **Check ID:** `SG_UNRESTRICTED_EGRESS`
 - **CIS Control:** 5.4
-- **Resource:** `sg-af979a8cb2c4fa640`
+- **Resource:** `sg-4b454c530d4b90c6e`
 - **Region:** us-east-1
 - **Remediation:** Restrict egress rules to specific destinations and ports.
 ```
@@ -149,6 +206,14 @@ GitHub Actions runs on every push and pull request to `main`:
 - **`.github/workflows/scan.yml`** — spins up LocalStack, applies the `infra/vulnerable` and
   `infra/remediated` Terraform configs in turn, and runs CloudSentinel against each, verifying
   the expected exit code (1 for vulnerable, 0 for remediated).
+
+![GitHub Actions run of the Runtime Scan workflow](demo/actions-runtime-scan.png)
+
+The workflow asserts its own expected exit codes rather than just running the scanner: it
+requires exit 1 on the vulnerable stack and exit 0 on the remediated one, so a regression in
+either direction fails CI — both the failing path and the passing path are tested. The
+findings counts produced in CI match the local run shown in the GIF exactly: 14 total, 6
+critical, 3 high, 5 medium.
 
 ## Known limitations
 
