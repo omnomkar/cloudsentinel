@@ -30,3 +30,6 @@ reports/
 # Claude Code session data
 .claude/
 terraform.tfvars
+
+# Local secrets (see .env.example)
+.env

@@ -1,0 +1,49 @@
+# CloudSentinel with PostgreSQL persistence.
+#
+#   cp .env.example .env   # then set POSTGRES_PASSWORD
+#   docker compose up --build
+#
+# The migration in ./migrations runs automatically the first time the
+# postgres volume is initialised (empty volume only).
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-cloudsentinel}
+      POSTGRES_DB: ${POSTGRES_DB:-cloudsentinel}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      # -h 127.0.0.1: during first-run init postgres listens on the unix
+      # socket only, so this stays unhealthy until migrations have finished.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  scanner:
+    build: .
+    image: cloudsentinel:latest
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # The password is passed via PGPASSWORD (read by libpq) rather than
+      # embedded in the URL, so it never appears in DATABASE_URL.
+      DATABASE_URL: postgresql://${POSTGRES_USER:-cloudsentinel}@postgres:5432/${POSTGRES_DB:-cloudsentinel}
+      PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      # Cloud credentials are passed through from the host environment.
+      AWS_ACCESS_KEY_ID:
+      AWS_SECRET_ACCESS_KEY:
+      AWS_SESSION_TOKEN:
+      AWS_DEFAULT_REGION:
+      AWS_PROFILE:
+    volumes:
+      - ./reports:/app/reports
+    command: ["--cloud", "aws", "--diff"]
+
+volumes:
+  pgdata:

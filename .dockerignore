@@ -2,6 +2,9 @@
 .git/
 .claude/
 
+# Local secrets
+.env
+
 # Python
 venv/
 .venv/
