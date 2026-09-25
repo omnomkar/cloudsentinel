@@ -7,6 +7,46 @@ on:
     branches: [main]
 
 jobs:
+  tests:
+    name: tests
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        ports:
+          - 5432:5432
+        env:
+          POSTGRES_USER: cloudsentinel
+          POSTGRES_DB: cloudsentinel
+          # Ephemeral service container, reachable only from this job's runner.
+          POSTGRES_PASSWORD: cloudsentinel-ci
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U cloudsentinel -d cloudsentinel"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+
+    env:
+      # tests/test_db.py fails (rather than skips) when this is set but
+      # unreachable in CI, so the PostgreSQL tests cannot silently drop out.
+      TEST_DATABASE_URL: postgresql://cloudsentinel:cloudsentinel-ci@localhost:5432/cloudsentinel
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run full test suite
+        run: python -m pytest tests/ -v -rs
+
   runtime-scan:
     name: runtime-scan
     runs-on: ubuntu-latest
