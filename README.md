@@ -123,6 +123,8 @@ CLI flags (from `main.py`):
 | `--fail-on {critical,high,medium,low}` | Severity threshold that causes a non-zero exit. Default: `critical`. |
 | `--output-dir DIR` | Where to write the JSON/Markdown reports. Default: `./reports`. |
 | `--exclude-checks CHECK_IDS` | Comma-separated check IDs to exclude from findings and the fail-on gate. |
+| `--db-url URL` | PostgreSQL URL to persist results to (falls back to `DATABASE_URL`). Off when neither is set. See [Persistence & Drift Detection](#persistence--drift-detection). |
+| `--diff` | Print drift versus the previous stored scan. Requires a database. |
 
 Examples:
 
@@ -143,6 +145,103 @@ python main.py --cloud all --subscription-id <subscription-id> \
 
 Exit codes: `0` = no findings at/above the `--fail-on` threshold, `1` = gate failed,
 `2` = scan error (e.g. missing `--subscription-id`, credential failure).
+
+## Persistence & Drift Detection
+
+Persistence is opt-in. When `--db-url` or `DATABASE_URL` is set, each scan is written to
+PostgreSQL ([`scanner/db.py`](scanner/db.py): psycopg v3, hand-written parameterized SQL, no
+ORM). When neither is set, CloudSentinel makes no database connection, which is the default.
+
+What gets stored:
+
+- Each provider in a run gets its own `scans` row, so `--cloud all` writes two rows.
+- The AWS account ID comes from `sts:GetCallerIdentity`. The Azure account ID is
+  `--subscription-id`, which is required whenever Azure results are persisted.
+- Only FAIL findings are stored, after `--exclude-checks` is applied.
+- A connection failure reports only the host and database name. The URL, and any password
+  in it, is never printed.
+
+### Schema
+
+[`migrations/001_init.sql`](migrations/001_init.sql):
+
+```sql
+CREATE TABLE scans (
+    id          BIGSERIAL   PRIMARY KEY,
+    provider    TEXT        NOT NULL CHECK (provider IN ('aws', 'azure')),
+    account_id  TEXT        NOT NULL,
+    started_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE findings (
+    id             BIGSERIAL PRIMARY KEY,
+    scan_id        BIGINT    NOT NULL REFERENCES scans (id) ON DELETE CASCADE,
+    check_id       TEXT      NOT NULL,
+    check_name     TEXT      NOT NULL,
+    cis_control    TEXT,              -- NULL for checks with no CIS mapping
+    severity       TEXT      NOT NULL CHECK (severity IN ('low', 'medium', 'high', 'critical')),
+    resource_id    TEXT      NOT NULL,
+    resource_type  TEXT      NOT NULL,
+    region         TEXT      NOT NULL,
+    details        JSONB     NOT NULL DEFAULT '{}'::jsonb,
+    UNIQUE (scan_id, check_id, resource_id)
+);
+
+CREATE INDEX findings_check_resource_idx ON findings (check_id, resource_id);
+CREATE INDEX findings_severity_idx       ON findings (severity);
+CREATE INDEX scans_provider_account_idx  ON scans (provider, account_id, started_at DESC);
+```
+
+The `(check_id, resource_id)` index exists so you can look up one finding's history across
+every scan (for example, "since when has this security group had SSH open?"). The UNIQUE
+index can't serve that query because its first column is `scan_id`.
+
+### Drift (`--diff`)
+
+`--diff` compares the scan that just ran with the previous scan for the same provider and
+account. It finds NEW and RESOLVED findings with SQL `EXCEPT` and STILL OPEN findings with
+`INTERSECT`. Findings are matched on `(check_id, resource_id)`, so a severity change on the
+same resource counts as STILL OPEN, shown at its current severity. `--exclude-checks` findings
+are never stored, so changing that list between runs shows up as drift.
+
+```text
+Drift — cloud: aws | account: 123456789012 | scan #5 vs #4
+  NEW            2
+  RESOLVED       1
+  STILL OPEN     2
+
+NEW (2):
+  HIGH      S3_PUBLIC_ACCESS_BLOCK              2.1.5   arn:aws:s3:::drift-demo-bucket
+  MEDIUM    S3_ENCRYPTION_AT_REST               2.1.1   arn:aws:s3:::drift-demo-bucket
+
+RESOLVED (1):
+  MEDIUM    SG_UNRESTRICTED_EGRESS              5.4     sg-d33c2dc18d190e7dc
+
+STILL OPEN (2):
+  CRITICAL  CLOUDTRAIL_NO_TRAIL                 3.1     aws:cloudtrail:us-east-1:no-trail
+  CRITICAL  IAM_ROOT_NO_MFA                     1.5     arn:aws:iam::root
+```
+
+On the first stored scan for a provider and account, `--diff` prints `No previous scan to
+compare` and doesn't report every finding as NEW. `--diff` never changes the exit code, which
+still comes only from `--fail-on`.
+
+### Running with Docker Compose
+
+```bash
+cp .env.example .env        # set POSTGRES_PASSWORD; .env is gitignored
+docker compose up --build   # postgres:16 + the scanner (runs --cloud aws --diff)
+```
+
+The compose file has no hardcoded password: `POSTGRES_PASSWORD` must be set. The scanner
+receives it as `PGPASSWORD` so it never appears in `DATABASE_URL`. The scanner container
+starts only once Postgres passes its healthcheck.
+
+The migration runs automatically because `./migrations` is mounted into
+`/docker-entrypoint-initdb.d`. **That hook runs only when the data volume is empty.** For
+future migrations on an existing volume, either apply them by hand
+(`docker compose exec -T postgres psql -U cloudsentinel -d cloudsentinel < migrations/002_x.sql`)
+or reset the volume with `docker compose down -v`, which deletes all stored scans.
 
 ## Sample report output
 
@@ -197,12 +296,23 @@ pytest tests/ -v
 services, and every Azure check against a mocked Azure SDK client (`unittest.mock`), each with
 both a misconfigured and a compliant case.
 
+`tests/test_db.py` adds persistence and drift tests. The ones that need a database run only
+when `TEST_DATABASE_URL` points at a PostgreSQL server; otherwise they are skipped. Each test
+uses its own throwaway schema:
+
+```bash
+docker run -d --rm -p 55432:5432 -e POSTGRES_PASSWORD=localtest postgres:16
+TEST_DATABASE_URL=postgresql://postgres:localtest@localhost:55432/postgres pytest tests/ -v
+```
+
 ## CI/CD
 
 GitHub Actions runs on every push and pull request to `main`:
 - **`.github/workflows/checkov.yml`** — static analysis of the Terraform in `infra/` with
   [Checkov](https://www.checkov.io/), verifying the vulnerable config is flagged and the
   remediated config is clean.
+- **`.github/workflows/scan.yml` (`tests` job)** — runs the full pytest suite against a
+  `postgres:16` service container, including the PostgreSQL-backed tests.
 - **`.github/workflows/scan.yml`** — spins up LocalStack, applies the `infra/vulnerable` and
   `infra/remediated` Terraform configs in turn, and runs CloudSentinel against each, verifying
   the expected exit code (1 for vulnerable, 0 for remediated).
