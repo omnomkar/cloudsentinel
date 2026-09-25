@@ -1,10 +1,11 @@
 import argparse
+import os
 import sys
 import boto3
 from scanner.aws import run_all_aws_checks
 from scanner.aggregator import aggregate
 from scanner.reporter import write_reports
-from scanner.console import color_enabled, render_report
+from scanner.console import color_enabled, render_diff, render_report
 
 
 SEVERITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3}
@@ -25,17 +26,49 @@ def parse_args():
         help="Comma-separated check IDs to exclude from findings and the fail-on gate (e.g. CLOUDTRAIL_NO_TRAIL).",
     )
     parser.add_argument("--no-color", action="store_true", help="Disable ANSI color in console output.")
+    parser.add_argument(
+        "--db-url",
+        default=None,
+        help="PostgreSQL URL to persist scan results to (falls back to DATABASE_URL). Persistence is off when neither is set.",
+    )
+    parser.add_argument(
+        "--diff",
+        action="store_true",
+        help="Compare this scan with the previous stored scan for the same provider/account (requires a database).",
+    )
     return parser.parse_args()
+
+
+def _aws_account_id(session, region, endpoint_url):
+    client_kwargs = {"region_name": region}
+    if endpoint_url:
+        client_kwargs["endpoint_url"] = endpoint_url
+    return session.client("sts", **client_kwargs).get_caller_identity()["Account"]
 
 
 def main():
     args = parse_args()
 
     try:
+        db_url = args.db_url or os.environ.get("DATABASE_URL")
+        conn = None
+        if args.diff and not db_url:
+            print("Error: --diff requires --db-url or DATABASE_URL.", file=sys.stderr)
+            sys.exit(2)
+        if db_url and args.cloud in ("azure", "all") and not args.subscription_id:
+            print("Error: --subscription-id is required to persist Azure scan results.", file=sys.stderr)
+            sys.exit(2)
+        if db_url:
+            from scanner import db
+            conn = db.connect(db_url)
+
         raw_findings = []
+        account_ids = {}
 
         if args.cloud in ("aws", "all"):
             session = boto3.Session()
+            if conn is not None:
+                account_ids["aws"] = _aws_account_id(session, args.region, args.endpoint_url)
             raw_findings.extend(run_all_aws_checks(session, args.region, endpoint_url=args.endpoint_url))
 
         if args.cloud in ("azure", "all"):
@@ -45,6 +78,7 @@ def main():
             from azure.identity import DefaultAzureCredential
             from scanner.azure import run_all_azure_checks
             credential = DefaultAzureCredential()
+            account_ids["azure"] = args.subscription_id
             raw_findings.extend(run_all_azure_checks(credential, args.subscription_id))
 
         findings, summary = aggregate(raw_findings)
@@ -83,6 +117,18 @@ def main():
             has_blocking=has_blocking,
             use_color=color_enabled(args.no_color),
         )
+
+        if conn is not None:
+            with conn:
+                for provider in clouds:
+                    db.save_scan(conn, provider, account_ids[provider], findings)
+                    if args.diff:
+                        render_diff(
+                            provider=provider,
+                            account_id=account_ids[provider],
+                            diff=db.diff_latest(conn, provider, account_ids[provider]),
+                            use_color=color_enabled(args.no_color),
+                        )
 
         sys.exit(1 if has_blocking else 0)
 

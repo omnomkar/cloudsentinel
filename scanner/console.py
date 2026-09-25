@@ -131,3 +131,46 @@ def render_report(
     lines.append(msg)
 
     stream.write("\n".join(lines) + "\n")
+
+
+_DIFF_BUCKETS = (("new", "NEW"), ("resolved", "RESOLVED"), ("still_open", "STILL OPEN"))
+
+
+def _diff_table(rows: List[Dict], use_color: bool) -> List[str]:
+    lines = []
+    for row in rows:
+        sev_text = _truncate(row["severity"].upper(), _SEVERITY_COL_WIDTH).ljust(_SEVERITY_COL_WIDTH)
+        sev_text = _colorize(sev_text, row["severity"], use_color)
+        check_id = _truncate(row["check_id"], _CHECK_ID_COL_WIDTH).ljust(_CHECK_ID_COL_WIDTH)
+        cis = _truncate(row["cis_control"] or "N/A", _CIS_COL_WIDTH).ljust(_CIS_COL_WIDTH)
+        resource = _truncate(row["resource_id"], _RESOURCE_COL_WIDTH)
+        lines.append(f"  {sev_text}  {check_id}  {cis}  {resource}")
+    return lines
+
+
+def render_diff(
+    provider: str,
+    account_id: str,
+    diff: Optional[Dict],
+    use_color: bool,
+    stream=sys.stdout,
+) -> None:
+    header = f"Drift — cloud: {provider} | account: {account_id}"
+
+    if diff is None:
+        stream.write(f"\n{header}\nNo previous scan to compare — this is the first stored scan.\n")
+        return
+
+    lines: List[str] = ["", f"{header} | scan #{diff['latest_scan_id']} vs #{diff['previous_scan_id']}"]
+    label_width = max(len(label) for _, label in _DIFF_BUCKETS) + 1
+    for key, label in _DIFF_BUCKETS:
+        lines.append(f"  {label:<{label_width}} {len(diff[key]):>4}")
+
+    for key, label in _DIFF_BUCKETS:
+        if not diff[key]:
+            continue
+        lines.append("")
+        lines.append(f"{label} ({len(diff[key])}):")
+        lines.extend(_diff_table(diff[key], use_color))
+
+    stream.write("\n".join(lines) + "\n")
