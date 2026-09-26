@@ -1,0 +1,4 @@
+# Only go.mod, go.sum and non-test .go files are needed to build the image.
+*_test.go
+Dockerfile
+.dockerignore
