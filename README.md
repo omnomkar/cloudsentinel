@@ -229,11 +229,12 @@ still comes only from `--fail-on`.
 ### Running with Docker Compose
 
 ```bash
-cp .env.example .env        # set POSTGRES_PASSWORD; .env is gitignored
-docker compose up --build   # postgres:16 + the scanner (runs --cloud aws --diff)
+cp .env.example .env        # set POSTGRES_PASSWORD and EXPORTER_DB_PASSWORD; .env is gitignored
+docker compose up --build   # postgres:16, the scanner (runs --cloud aws --diff), exporter, Prometheus
 ```
 
-The compose file has no hardcoded password: `POSTGRES_PASSWORD` must be set. The scanner
+The compose file has no hardcoded passwords: `POSTGRES_PASSWORD` and `EXPORTER_DB_PASSWORD`
+must be set. The scanner
 receives it as `PGPASSWORD` so it never appears in `DATABASE_URL`. The scanner container
 starts only once Postgres passes its healthcheck.
 
@@ -242,6 +243,111 @@ The migration runs automatically because `./migrations` is mounted into
 future migrations on an existing volume, either apply them by hand
 (`docker compose exec -T postgres psql -U cloudsentinel -d cloudsentinel < migrations/002_x.sql`)
 or reset the volume with `docker compose down -v`, which deletes all stored scans.
+
+## Exporter & Monitoring
+
+`exporter/` is a small Go service that reads stored scans from PostgreSQL and exposes them as
+[Prometheus](https://prometheus.io/) metrics, so findings can be graphed and alerted on
+instead of read one report at a time. It queries the database on every scrape (no cache,
+5-second timeout) and serves `/metrics` and `/healthz` on `:9187` (`LISTEN_ADDR`).
+
+### Metrics
+
+All per-account metrics come from the **latest scan** for each `(provider, account_id)`.
+
+| Metric | Labels | Meaning |
+|---|---|---|
+| `cloudsentinel_findings` | `provider`, `account_id`, `severity` | FAIL findings in the latest scan. All four severities are always present (0 if none). |
+| `cloudsentinel_last_scan_timestamp_seconds` | `provider`, `account_id` | Unix time the latest scan started. |
+| `cloudsentinel_drift_findings` | `provider`, `account_id`, `status` (`new`/`resolved`) | Findings that appeared in, or disappeared from, the latest scan compared with the previous one. Matched on `(check_id, resource_id)`, exactly like `--diff`; absent until an account has two scans. |
+| `cloudsentinel_exporter_up` | — | `1` if the last database query succeeded, `0` otherwise. |
+
+All queries for one scrape run in a single read-only `REPEATABLE READ` transaction, so a scan
+that commits mid-scrape can't leave the metrics disagreeing with each other. If the database
+is unreachable, the scrape returns only `cloudsentinel_exporter_up 0`, not stale numbers.
+
+### Example PromQL
+
+```promql
+# Critical findings per account
+sum by (provider, account_id) (cloudsentinel_findings{severity="critical"})
+
+# Total open findings across everything
+sum(cloudsentinel_findings)
+
+# Accounts whose latest scan introduced new findings
+cloudsentinel_drift_findings{status="new"} > 0
+
+# Hours since each account was last scanned (alert when this grows too large)
+(time() - cloudsentinel_last_scan_timestamp_seconds) / 3600
+
+# Exporter can't reach the database
+cloudsentinel_exporter_up == 0
+```
+
+### Running it
+
+With Docker Compose (above), the `exporter` and `prometheus` services start with the rest of
+the stack. Open the Prometheus UI at <http://127.0.0.1:9090> and check **Status → Targets**,
+where `cloudsentinel` should be `UP`. For network exposure:
+
+- The exporter's port is **not published** to the host. Prometheus scrapes `exporter:9187` on the
+  compose network.
+- Prometheus is bound to **127.0.0.1:9090** only, so it isn't reachable from other machines.
+- The exporter image is a static binary on `distroless/static-debian12:nonroot`. It has no
+  shell, runs as a non-root user and has a read-only filesystem.
+
+To run it outside Docker (Go 1.27+):
+
+```bash
+cd exporter
+export DATABASE_URL=postgresql://cloudsentinel_exporter@localhost:5432/cloudsentinel
+export PGPASSWORD=...        # the EXPORTER_DB_PASSWORD you chose
+go run .
+curl -s localhost:9187/metrics | grep ^cloudsentinel
+```
+
+Configuration comes from environment variables: `DATABASE_URL` (no password), `PGPASSWORD`
+and `LISTEN_ADDR`. Logs are structured JSON (`log/slog`). They identify the database only by
+host and dbname and never include the password or connection URL.
+
+### Why a read-only role
+
+The exporter connects as `cloudsentinel_exporter`, created by
+[`migrations/002_exporter_role.sql`](migrations/002_exporter_role.sql), not as the database
+owner. The role has exactly `CONNECT` on the database, `USAGE` on schema `public`, and
+`SELECT` on `scans` and `findings`, and nothing else. The exporter is the part of the stack
+exposed over HTTP and runs continuously, so it is the most likely component to be buggy or
+compromised. With a read-only role, even a SQL bug or a stolen credential can't alter or
+delete scan history, and the database enforces this rather than the exporter's own code.
+The Go integration tests assert that the role gets *permission denied* on
+`INSERT`/`UPDATE`/`DELETE`.
+
+The role's password comes from `EXPORTER_DB_PASSWORD` (read by psql's `\getenv`) and is
+never stored in the repo. The migration refuses to run if that variable is unset. On a fresh
+volume it runs automatically. On an **existing** volume, apply it by hand:
+
+```bash
+docker compose exec -T postgres \
+  psql -v ON_ERROR_STOP=1 -U cloudsentinel -d cloudsentinel -f /docker-entrypoint-initdb.d/002_exporter_role.sql
+```
+
+This relies on `EXPORTER_DB_PASSWORD` being set in `.env`, because compose passes it into the
+postgres container. The migration is idempotent, so running it again is safe.
+
+### Tests
+
+```bash
+cd exporter
+go vet ./... && go test ./...        # unit tests; DB tests skip
+docker run -d --rm --name cs-pg -p 55432:5432 -e POSTGRES_USER=cloudsentinel \
+  -e POSTGRES_PASSWORD=localtest -e EXPORTER_DB_PASSWORD=exportertest \
+  -v "$PWD/../migrations:/docker-entrypoint-initdb.d:ro" postgres:16
+TEST_DATABASE_URL=postgresql://cloudsentinel:localtest@localhost:55432/cloudsentinel go test -v ./...
+```
+
+The integration tests seed two scans in a throwaway schema and compare every metric value
+exactly. They also check the read-only role's grants.
 
 ## Sample report output
 
@@ -313,6 +419,9 @@ GitHub Actions runs on every push and pull request to `main`:
   remediated config is clean.
 - **`.github/workflows/scan.yml` (`tests` job)** — runs the full pytest suite against a
   `postgres:16` service container, including the PostgreSQL-backed tests.
+- **`.github/workflows/scan.yml` (`exporter` job)** — `gofmt` check, `go vet`, `go test -race`
+  (with migrations applied to a `postgres:16` service, so the integration tests run) and
+  `govulncheck` for the Go exporter.
 - **`.github/workflows/scan.yml`** — spins up LocalStack, applies the `infra/vulnerable` and
   `infra/remediated` Terraform configs in turn, and runs CloudSentinel against each, verifying
   the expected exit code (1 for vulnerable, 0 for remediated).
