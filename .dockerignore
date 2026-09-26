@@ -21,3 +21,7 @@ infra/
 
 # Scanner output, not part of the image
 reports/
+
+# Built from their own contexts (see docker-compose.yml)
+exporter/
+monitoring/

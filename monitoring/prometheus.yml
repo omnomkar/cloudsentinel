@@ -1,0 +1,14 @@
+# Minimal Prometheus config for the docker-compose stack.
+#
+# The exporter queries PostgreSQL on every scrape, and scan results only
+# change when the scanner runs, so a 30s interval is plenty.
+global:
+  scrape_interval: 30s
+  scrape_timeout: 10s   # above the exporter's 5s database query timeout
+
+scrape_configs:
+  - job_name: cloudsentinel
+    static_configs:
+      # Compose service name, on the internal network; the exporter's port
+      # is not published to the host.
+      - targets: ["exporter:9187"]

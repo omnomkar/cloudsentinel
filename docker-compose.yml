@@ -1,9 +1,11 @@
-# CloudSentinel with PostgreSQL persistence.
+# CloudSentinel with PostgreSQL persistence and Prometheus monitoring.
 #
-#   cp .env.example .env   # then set POSTGRES_PASSWORD
+#   cp .env.example .env   # then set POSTGRES_PASSWORD and EXPORTER_DB_PASSWORD
 #   docker compose up --build
 #
-# The migration in ./migrations runs automatically the first time the
+# Prometheus UI: http://127.0.0.1:9090 (bound to localhost only).
+#
+# The migrations in ./migrations run automatically the first time the
 # postgres volume is initialised (empty volume only).
 
 services:
@@ -13,6 +15,8 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-cloudsentinel}
       POSTGRES_DB: ${POSTGRES_DB:-cloudsentinel}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      # Read by migrations/002_exporter_role.sql during first-run init.
+      EXPORTER_DB_PASSWORD: ${EXPORTER_DB_PASSWORD:?set EXPORTER_DB_PASSWORD}
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./migrations:/docker-entrypoint-initdb.d:ro
@@ -45,5 +49,34 @@ services:
       - ./reports:/app/reports
     command: ["--cloud", "aws", "--diff"]
 
+  exporter:
+    build: ./exporter
+    image: cloudsentinel-exporter:latest
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # Connects as the read-only role from migrations/002, not the owner.
+      DATABASE_URL: postgresql://cloudsentinel_exporter@postgres:5432/${POSTGRES_DB:-cloudsentinel}
+      PGPASSWORD: ${EXPORTER_DB_PASSWORD:?set EXPORTER_DB_PASSWORD}
+    # No ports: Prometheus scrapes exporter:9187 on the compose network, so
+    # the metrics endpoint is not reachable from the host.
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v3.15.0
+    depends_on:
+      - exporter
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - promdata:/prometheus
+    ports:
+      - "127.0.0.1:9090:9090"
+    restart: unless-stopped
+
 volumes:
   pgdata:
+  promdata:
