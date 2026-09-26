@@ -47,6 +47,74 @@ jobs:
       - name: Run full test suite
         run: python -m pytest tests/ -v -rs
 
+  exporter:
+    name: exporter
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        ports:
+          - 5432:5432
+        env:
+          POSTGRES_USER: cloudsentinel
+          POSTGRES_DB: cloudsentinel
+          # Ephemeral service container, reachable only from this job's runner.
+          POSTGRES_PASSWORD: cloudsentinel-ci
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U cloudsentinel -d cloudsentinel"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+
+    env:
+      # The integration tests fail (rather than skip) when CI is set and this
+      # database is unreachable or not migrated.
+      TEST_DATABASE_URL: postgresql://cloudsentinel:cloudsentinel-ci@localhost:5432/cloudsentinel
+
+    defaults:
+      run:
+        working-directory: exporter
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: exporter/go.mod
+          cache-dependency-path: exporter/go.sum
+
+      - name: Check formatting (gofmt)
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "These files need gofmt -w:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      # 002 uses psql's \getenv (psql 15+), so run psql from the postgres:16
+      # image rather than relying on the runner's client version.
+      - name: Apply migrations (schema + read-only exporter role)
+        env:
+          EXPORTER_DB_PASSWORD: exporter-ci
+        run: |
+          docker run --rm --network host \
+            -e TEST_DATABASE_URL -e EXPORTER_DB_PASSWORD \
+            -v "$PWD/../migrations:/migrations:ro" postgres:16 \
+            sh -c 'for f in /migrations/*.sql; do psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -q -f "$f" || exit 1; done'
+
+      - name: go test
+        run: go test -race -count=1 -v ./...
+
+      - name: govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
+
   runtime-scan:
     name: runtime-scan
     runs-on: ubuntu-latest
